@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -667,6 +668,8 @@ func (ws *WebServer) buildAdminMux() *http.ServeMux {
 	mux.HandleFunc("/api/access/mode", ws.requireAuth(ws.handleAccessMode))
 	mux.HandleFunc("/api/clients/", ws.requireAuth(ws.handleClientAction))
 	mux.HandleFunc("/api/policies", ws.requireAuth(ws.handlePolicies))
+	mux.HandleFunc("/api/custom-rules", ws.requireAuth(ws.handleCustomRules))
+	mux.HandleFunc("/api/custom-rules/", ws.requireAuth(ws.handleCustomRuleItem))
 	mux.HandleFunc("/api/cache/flush", ws.requireAuth(ws.handleFlushCache))
 	mux.HandleFunc("/api/settings", ws.requireAuth(ws.handleSettings))
 	mux.HandleFunc("/api/settings/regenerate-api-key", ws.requireAuth(ws.handleRegenerateAPIKey))
@@ -1605,6 +1608,9 @@ func (ws *WebServer) handleClients(w http.ResponseWriter, r *http.Request) {
 			TrafficLimitGB    float64  `json:"traffic_limit_gb"`
 			TrafficResetCycle string   `json:"traffic_reset_cycle"`
 			CustomPolicies    []string `json:"custom_policies"`
+			AllowedPolicies   []string `json:"allowed_policies"`
+			AllowDownloads    bool     `json:"allow_downloads"`
+			UseCustomScope    bool     `json:"use_custom_scope"`
 			Note              string   `json:"note"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
@@ -1637,6 +1643,9 @@ func (ws *WebServer) handleClients(w http.ResponseWriter, r *http.Request) {
 			TrafficLimitGB:    req.TrafficLimitGB,
 			TrafficResetCycle: req.TrafficResetCycle,
 			CustomPolicies:    req.CustomPolicies,
+			AllowedPolicies:   req.AllowedPolicies,
+			AllowDownloads:    req.AllowDownloads,
+			UseCustomScope:    req.UseCustomScope,
 
 			Note: req.Note,
 		})
@@ -1848,6 +1857,49 @@ func (ws *WebServer) handleClientAction(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
+		return
+	}
+
+	if clientID, ok := strings.CutSuffix(id, "/policies"); ok {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead:
+			client, err := ws.clients.GetClient(clientID)
+			if err != nil {
+				httpx.WriteJSONError(w, http.StatusNotFound, "Client not found")
+				return
+			}
+			allowed := client.AllowedPolicies
+			if allowed == nil {
+				allowed = []string{}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"allowed_policies": allowed,
+				"allow_downloads":  client.AllowDownloads,
+				"use_custom_scope": client.UseCustomScope,
+			})
+		case http.MethodPut:
+			var req struct {
+				AllowedPolicies *[]string `json:"allowed_policies"`
+				AllowDownloads  *bool     `json:"allow_downloads"`
+				UseCustomScope  *bool     `json:"use_custom_scope"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				httpx.WriteJSONError(w, http.StatusBadRequest, "Invalid JSON payload")
+				return
+			}
+			updated, err := ws.clients.UpdateClient(clientID, service.UpdateClientRequest{
+				AllowedPolicies: req.AllowedPolicies,
+				AllowDownloads:  req.AllowDownloads,
+				UseCustomScope:  req.UseCustomScope,
+			})
+			if err != nil {
+				httpx.WriteClientError(w, err)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(ws.clients.ViewClient(updated))
+		default:
+			httpx.WriteMethodNotAllowed(w, "GET, HEAD, PUT")
+		}
 		return
 	}
 
@@ -2346,4 +2398,131 @@ func (ws *WebServer) handleDiagnosticsRun(w http.ResponseWriter, r *http.Request
 		"results":         results,
 		"timestamp":       time.Now(),
 	})
+}
+
+
+func (ws *WebServer) reloadCustomRulesMatcher() {
+	if ws.matcher == nil || ws.db == nil {
+		return
+	}
+	if rules, err := ws.db.ListCustomRules(); err == nil {
+		ws.matcher.ReloadCustomRules(rules)
+	}
+}
+
+func (ws *WebServer) handleCustomRules(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	switch r.Method {
+	case http.MethodGet, http.MethodHead:
+		rules, err := ws.db.ListCustomRules()
+		if err != nil {
+			httpx.WriteJSONErrorFor(w, http.StatusInternalServerError, err)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"items": rules})
+
+	case http.MethodPost:
+		var req struct {
+			Domain  string `json:"domain"`
+			Action  string `json:"action"`
+			Enabled *bool  `json:"enabled"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			httpx.WriteJSONError(w, http.StatusBadRequest, "Invalid JSON payload")
+			return
+		}
+		enabled := true
+		if req.Enabled != nil {
+			enabled = *req.Enabled
+		}
+		saved, err := ws.db.SaveCustomRule(database.CustomRule{
+			Domain:  req.Domain,
+			Action:  req.Action,
+			Enabled: enabled,
+		})
+		if err != nil {
+			httpx.WriteJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		ws.reloadCustomRulesMatcher()
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(saved)
+
+	default:
+		httpx.WriteMethodNotAllowed(w, "GET, HEAD, POST")
+	}
+}
+
+func (ws *WebServer) handleCustomRuleItem(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	id := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/custom-rules/"), "/"))
+	if id == "" {
+		httpx.WriteJSONError(w, http.StatusBadRequest, "Rule ID is required")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet, http.MethodHead:
+		rule, err := ws.db.GetCustomRule(id)
+		if err != nil {
+			if errors.Is(err, database.ErrCustomRuleNotFound) {
+				httpx.WriteJSONError(w, http.StatusNotFound, "Custom rule not found")
+				return
+			}
+			httpx.WriteJSONErrorFor(w, http.StatusInternalServerError, err)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(rule)
+
+	case http.MethodPut:
+		existing, err := ws.db.GetCustomRule(id)
+		if err != nil {
+			if errors.Is(err, database.ErrCustomRuleNotFound) {
+				httpx.WriteJSONError(w, http.StatusNotFound, "Custom rule not found")
+				return
+			}
+			httpx.WriteJSONErrorFor(w, http.StatusInternalServerError, err)
+			return
+		}
+		var req struct {
+			Domain  *string `json:"domain"`
+			Action  *string `json:"action"`
+			Enabled *bool   `json:"enabled"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			httpx.WriteJSONError(w, http.StatusBadRequest, "Invalid JSON payload")
+			return
+		}
+		if req.Domain != nil {
+			existing.Domain = *req.Domain
+		}
+		if req.Action != nil {
+			existing.Action = *req.Action
+		}
+		if req.Enabled != nil {
+			existing.Enabled = *req.Enabled
+		}
+		saved, err := ws.db.SaveCustomRule(*existing)
+		if err != nil {
+			httpx.WriteJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		ws.reloadCustomRulesMatcher()
+		_ = json.NewEncoder(w).Encode(saved)
+
+	case http.MethodDelete:
+		if err := ws.db.DeleteCustomRule(id); err != nil {
+			if errors.Is(err, database.ErrCustomRuleNotFound) {
+				httpx.WriteJSONError(w, http.StatusNotFound, "Custom rule not found")
+				return
+			}
+			httpx.WriteJSONErrorFor(w, http.StatusInternalServerError, err)
+			return
+		}
+		ws.reloadCustomRulesMatcher()
+		_ = json.NewEncoder(w).Encode(map[string]bool{"deleted": true})
+
+	default:
+		httpx.WriteMethodNotAllowed(w, "GET, HEAD, PUT, DELETE")
+	}
 }

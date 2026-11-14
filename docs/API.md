@@ -130,6 +130,50 @@ Send only what changes: `{"allowed_ips":["203.0.113.9"]}` moves the binding; `{"
 
 ### `DELETE /api/v2/clients/{id}` → `204 No Content`
 
+### Custom domain routing rules (`/api/v2/custom-rules`)
+
+Manual per-domain entries that ride the same engine as the gaming presets: an
+entry with action `proxy` is answered with the server's own address and relayed
+by the SNI proxy exactly like a built-in category; `direct` forwards the name to
+the upstream DNS untouched. Exact and wildcard (`*.example.com`) forms are
+supported, and every write hot-reloads the live rule set — no restart.
+
+A rule object:
+
+```json
+{
+  "id": "rule_9f2c31d7a1b04e55",
+  "domain": "play.example.com",
+  "action": "proxy",
+  "enabled": true,
+  "created_at": "2026-11-12T02:00:00Z",
+  "updated_at": "2026-11-12T02:00:00Z"
+}
+```
+
+- **`GET /api/v2/custom-rules`** → `{"items": [ ... ]}` in creation order.
+- **`POST /api/v2/custom-rules`** → `201 Created` with the stored rule and a
+  `Location` header. Body: `{"domain": "*.example.com", "action": "proxy", "enabled": true}`.
+- **`PUT /api/v2/custom-rules/{id}`** → the updated rule; partial update, only
+  the fields you send change.
+- **`DELETE /api/v2/custom-rules/{id}`** → `{"deleted": true}`.
+
+Validation (a violation is a `400` whose `detail` names the problem):
+
+- The entry may be pasted as a bare domain, a URL or a `host:port` pair —
+  `https://play.example.com:8443/store` is stored as `play.example.com`
+  (scheme, userinfo, port and path are stripped; input is trimmed and
+  lowercased; a trailing root dot is removed).
+- Hostnames must be RFC 1123 labels — letters, digits, hyphens; no empty,
+  hyphen-edge or over-long labels (63 per label, 253 total). Underscores are
+  refused: TLS SNI cannot carry one.
+- IP addresses and CIDR ranges are refused: the matcher routes DNS query
+  names, not addresses. To pin a domain to a fixed address, use the dashboard's
+  Custom DNS Records instead.
+- Only a leading `*.domain` wildcard is accepted.
+- Two enabled rules cannot claim the same normalized domain — the second save
+  is rejected. A disabled rule may shadow a live one.
+
 ---
 
 

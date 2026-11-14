@@ -18,12 +18,14 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"hyperdns/internal/core/matcher"
+	"hyperdns/internal/database"
 	"hyperdns/internal/httpx"
 	"hyperdns/internal/service"
 	"hyperdns/internal/version"
@@ -89,7 +91,10 @@ type v2ClientDTO struct {
 	// Admin-only credential surfaces, exactly as /api/clients v1 exposes them
 	// (never on any public route; the portal's public view is a different,
 	// smaller struct).
-	RegisterSecret string `json:"register_secret,omitempty"`
+	RegisterSecret  string   `json:"register_secret,omitempty"`
+	AllowedPolicies []string `json:"allowed_policies"`
+	AllowDownloads  bool     `json:"allow_downloads"`
+	UseCustomScope  bool     `json:"use_custom_scope"`
 }
 
 // RegisterRoutesV2 attaches the /api/v2 endpoints.
@@ -99,6 +104,8 @@ func (a *API) RegisterRoutesV2(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v2/clients", a.SecurityMiddleware(a.handleV2Clients))
 	mux.HandleFunc("/api/v2/clients/", a.SecurityMiddleware(a.handleV2ClientItem))
 	mux.HandleFunc("/api/v2/policies", a.SecurityMiddleware(a.handleV2Policies))
+	mux.HandleFunc("/api/v2/custom-rules", a.SecurityMiddleware(a.handleV2CustomRules))
+	mux.HandleFunc("/api/v2/custom-rules/", a.SecurityMiddleware(a.handleV2CustomRuleItem))
 	mux.HandleFunc("/api/v2/cache/flush", a.SecurityMiddleware(a.handleV2FlushCache))
 }
 
@@ -206,6 +213,9 @@ func (a *API) handleV2Clients(w http.ResponseWriter, r *http.Request) {
 			QuotaResetCycle string   `json:"quota_reset_cycle"`
 			PolicyIDs       []string `json:"policy_ids"`
 			Note            string   `json:"note"`
+			AllowedPolicies []string `json:"allowed_policies"`
+			AllowDownloads  bool     `json:"allow_downloads"`
+			UseCustomScope  bool     `json:"use_custom_scope"`
 		}
 		if !decodeStrict(w, r, &req) {
 			return
@@ -225,6 +235,9 @@ func (a *API) handleV2Clients(w http.ResponseWriter, r *http.Request) {
 			TrafficResetCycle: req.QuotaResetCycle,
 			Note:              req.Note,
 			CustomPolicies:    req.PolicyIDs,
+			AllowedPolicies:   req.AllowedPolicies,
+			AllowDownloads:    req.AllowDownloads,
+			UseCustomScope:    req.UseCustomScope,
 		})
 		if err != nil {
 			httpx.WriteClientError(w, err)
@@ -250,6 +263,11 @@ func (a *API) handleV2ClientItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.v2ClientAction(w, clientID, action)
+		return
+	}
+
+	if clientID, ok := strings.CutSuffix(rest, "/policies"); ok {
+		a.handleV2ClientPolicies(w, r, clientID)
 		return
 	}
 
@@ -298,6 +316,9 @@ type v2PatchRequest struct {
 	Note            *string   `json:"note"`
 	Enabled         *bool     `json:"enabled"`
 	ValidityDaysAdd *int      `json:"validity_days_add"`
+	AllowedPolicies *[]string `json:"allowed_policies"`
+	AllowDownloads  *bool     `json:"allow_downloads"`
+	UseCustomScope  *bool     `json:"use_custom_scope"`
 }
 
 func (p v2PatchRequest) toService() service.UpdateClientRequest {
@@ -322,6 +343,15 @@ func (p v2PatchRequest) toService() service.UpdateClientRequest {
 	}
 	if p.ValidityDaysAdd != nil {
 		req.DaysToAdd = p.ValidityDaysAdd
+	}
+	if p.AllowedPolicies != nil {
+		req.AllowedPolicies = p.AllowedPolicies
+	}
+	if p.AllowDownloads != nil {
+		req.AllowDownloads = p.AllowDownloads
+	}
+	if p.UseCustomScope != nil {
+		req.UseCustomScope = p.UseCustomScope
 	}
 	return req
 }
@@ -385,6 +415,9 @@ func v2ViewToDTO(c service.ClientView) v2ClientDTO {
 		Note:            c.Note,
 		Enabled:         c.Enabled,
 		RegisterSecret:  c.RegisterSecret,
+		AllowedPolicies: c.AllowedPolicies,
+		AllowDownloads:  c.AllowDownloads,
+		UseCustomScope:  c.UseCustomScope,
 	}
 	if !c.ExpiresAt.IsZero() {
 		dto.ExpiresAt = c.ExpiresAt.UTC().Format(timeFormatRFC3339)
@@ -401,4 +434,174 @@ func firstNonEmpty(ss []string) string {
 		}
 	}
 	return ""
+}
+
+
+func (a *API) reloadMatcherCustomRules() {
+	if a.matcher == nil || a.db == nil {
+		return
+	}
+	if rules, err := a.db.ListCustomRules(); err == nil {
+		a.matcher.ReloadCustomRules(rules)
+	}
+}
+
+func (a *API) handleV2ClientPolicies(w http.ResponseWriter, r *http.Request, clientID string) {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead:
+		client, err := a.clients.GetClient(clientID)
+		if err != nil {
+			writeProblem(w, http.StatusNotFound, "not_found", "no client with that id")
+			return
+		}
+		allowed := client.AllowedPolicies
+		if allowed == nil {
+			allowed = []string{}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"client_id":        client.ID,
+			"allowed_policies": allowed,
+			"allow_downloads":  client.AllowDownloads,
+			"use_custom_scope": client.UseCustomScope,
+		})
+
+	case http.MethodPut:
+		var req struct {
+			AllowedPolicies *[]string `json:"allowed_policies"`
+			AllowDownloads  *bool     `json:"allow_downloads"`
+			UseCustomScope  *bool     `json:"use_custom_scope"`
+		}
+		if !decodeStrict(w, r, &req) {
+			return
+		}
+		updated, err := a.clients.UpdateClient(clientID, service.UpdateClientRequest{
+			AllowedPolicies: req.AllowedPolicies,
+			AllowDownloads:  req.AllowDownloads,
+			UseCustomScope:  req.UseCustomScope,
+		})
+		if err != nil {
+			httpx.WriteClientError(w, err)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(v2ViewToDTO(a.clients.ViewClient(updated)))
+
+	default:
+		writeProblem(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET, HEAD or PUT")
+	}
+}
+
+func (a *API) handleV2CustomRules(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead:
+		rules, err := a.db.ListCustomRules()
+		if err != nil {
+			writeProblem(w, http.StatusInternalServerError, "internal", err.Error())
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"items": rules,
+		})
+
+	case http.MethodPost:
+		var req struct {
+			Domain  string `json:"domain"`
+			Action  string `json:"action"`
+			Enabled *bool  `json:"enabled"`
+		}
+		if !decodeStrict(w, r, &req) {
+			return
+		}
+		enabled := true
+		if req.Enabled != nil {
+			enabled = *req.Enabled
+		}
+		saved, err := a.db.SaveCustomRule(database.CustomRule{
+			Domain:  req.Domain,
+			Action:  req.Action,
+			Enabled: enabled,
+		})
+		if err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		a.reloadMatcherCustomRules()
+		w.Header().Set("Location", "/api/v2/custom-rules/"+saved.ID)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(saved)
+
+	default:
+		writeProblem(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET, HEAD or POST")
+	}
+}
+
+func (a *API) handleV2CustomRuleItem(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v2/custom-rules/"), "/"))
+	if id == "" {
+		writeProblem(w, http.StatusBadRequest, "invalid_request", "rule id is required")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet, http.MethodHead:
+		rule, err := a.db.GetCustomRule(id)
+		if err != nil {
+			if errors.Is(err, database.ErrCustomRuleNotFound) {
+				writeProblem(w, http.StatusNotFound, "not_found", "custom rule not found")
+				return
+			}
+			writeProblem(w, http.StatusInternalServerError, "internal", err.Error())
+			return
+		}
+		_ = json.NewEncoder(w).Encode(rule)
+
+	case http.MethodPut:
+		existing, err := a.db.GetCustomRule(id)
+		if err != nil {
+			if errors.Is(err, database.ErrCustomRuleNotFound) {
+				writeProblem(w, http.StatusNotFound, "not_found", "custom rule not found")
+				return
+			}
+			writeProblem(w, http.StatusInternalServerError, "internal", err.Error())
+			return
+		}
+		var req struct {
+			Domain  *string `json:"domain"`
+			Action  *string `json:"action"`
+			Enabled *bool   `json:"enabled"`
+		}
+		if !decodeStrict(w, r, &req) {
+			return
+		}
+		if req.Domain != nil {
+			existing.Domain = *req.Domain
+		}
+		if req.Action != nil {
+			existing.Action = *req.Action
+		}
+		if req.Enabled != nil {
+			existing.Enabled = *req.Enabled
+		}
+		saved, err := a.db.SaveCustomRule(*existing)
+		if err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		a.reloadMatcherCustomRules()
+		_ = json.NewEncoder(w).Encode(saved)
+
+	case http.MethodDelete:
+		if err := a.db.DeleteCustomRule(id); err != nil {
+			if errors.Is(err, database.ErrCustomRuleNotFound) {
+				writeProblem(w, http.StatusNotFound, "not_found", "custom rule not found")
+				return
+			}
+			writeProblem(w, http.StatusInternalServerError, "internal", err.Error())
+			return
+		}
+		a.reloadMatcherCustomRules()
+		w.WriteHeader(http.StatusNoContent)
+
+	default:
+		writeProblem(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET, HEAD, PUT or DELETE")
+	}
 }

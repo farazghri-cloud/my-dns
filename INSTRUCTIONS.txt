@@ -1,0 +1,111 @@
+========================================================================
+HYPERDNS — DEPLOYMENT, CUSTOM ROUTING & POLICY SCOPING GUIDE
+========================================================================
+
+1. PREREQUISITES & BUILD
+------------------------
+Requirements:
+  - Go 1.24+ (tested with Go 1.26.4)
+  - Ports available: 53 (UDP/TCP DNS), 80/443 (SNI Proxy), 853 (DoT), 8080 (Web Panel)
+
+Build from source:
+  go build -o bin/hyperdns ./cmd/hyperdns
+
+Run:
+  ./bin/hyperdns
+
+On first launch, check stdout for the generated 16-hex admin path,
+default admin password, and REST API key. Store these securely and
+rotate credentials immediately upon login.
+
+
+2. MANUAL CUSTOM DOMAIN ROUTING (EXACT & WILDCARD)
+--------------------------------------------------
+Custom rules let you override global presets dynamically with zero
+restarts using an atomic lockless lookup engine.
+
+Supported patterns:
+  - Exact match:    download.example.com
+  - Wildcard match: *.epicgames.com   (matches subdomains; exact wins over wildcard)
+
+Supported actions:
+  - proxy  : Intercept via SNI relay (resolves to server Public IP)
+  - direct : Bypass relay and forward directly to upstream DNS
+
+Accepted entry forms & validation:
+  - Paste a bare domain, a URL, or host:port - "https://play.example.com:8443/store"
+    is stored as play.example.com (scheme, userinfo, port and path stripped;
+    input trimmed and lowercased; trailing root dot removed).
+  - Malformed hostnames are rejected with the reason (double dots, hyphen at a
+    label edge, label > 63 chars, name > 253 chars). Underscores are rejected:
+    TLS SNI cannot carry one.
+  - IP addresses and CIDR ranges are rejected: DNS policy routes query NAMES.
+    To pin a domain to a fixed address, use a Custom DNS Record instead.
+  - Two enabled rules cannot claim the same domain (the second save is
+    rejected). A disabled rule may shadow a live one.
+
+Via Web Dashboard:
+  1. Open Admin Panel -> Rules & Access tab.
+  2. In "Manual Domain Routing Rules", enter domain/wildcard + select action.
+  3. Click "Add Rule" (hot-reloads immediately).
+
+Via REST API v2 (Header: X-API-Key: <API_KEY>):
+  - List rules:
+    GET /api/v2/custom-rules
+  - Add rule:
+    POST /api/v2/custom-rules
+    {"domain": "*.epicgames.com", "action": "proxy", "enabled": true}
+  - Update rule:
+    PUT /api/v2/custom-rules/<RULE_ID>
+    {"action": "direct", "enabled": true}
+  - Delete rule:
+    DELETE /api/v2/custom-rules/<RULE_ID>
+
+
+3. PER-CLIENT POLICY SCOPING & DOWNLOAD CDN BYPASS
+--------------------------------------------------
+Assign isolated preset scopes and disable heavy download relay traffic
+per subscriber to conserve proxy bandwidth.
+
+Fields:
+  - use_custom_scope : true = enforce allowed_policies instead of global defaults
+  - allowed_policies : Array of preset keys (e.g. ["enable_epic", "enable_riot"])
+  - allow_downloads  : false = force game download CDNs (Steam/Epic/Blizzard/etc.)
+                       direct to upstream DNS even when game presets are proxied
+
+Via Web Dashboard:
+  1. Open Clients tab -> Edit subscriber.
+  2. Select allowed policies in "Attached DNS Policies".
+  3. Enable "Override Global Defaults (Strict Scope)".
+  4. Keep "Allow Game Download CDNs via Proxy" UNCHECKED to bypass CDNs.
+  5. Save changes (applies immediately on next DNS query).
+
+Via REST API v2:
+  - Read client scope:
+    GET /api/v2/clients/<CLIENT_ID>/policies
+  - Set Epic Games only + bypass download CDNs:
+    PUT /api/v2/clients/<CLIENT_ID>/policies
+    {
+      "use_custom_scope": true,
+      "allowed_policies": ["enable_epic"],
+      "allow_downloads": false
+    }
+
+
+4. CLIENT ENDPOINT DNS CONFIGURATION
+------------------------------------
+1. Register Client IP:
+   - Assign static IP in Dashboard, OR open the subscriber portal:
+     https://<SERVER_DOMAIN_OR_IP>:8080/sub/<CLIENT_TOKEN>
+   - Or POST /ip/<CLIENT_TOKEN> with the register_secret.
+
+2. Set Device DNS to Server IP:
+   - Windows: Network Adapter -> IPv4 Properties -> Preferred DNS: <SERVER_IP>
+   - Linux:   nmcli con mod <CON> ipv4.dns "<SERVER_IP>" ipv4.ignore-auto-dns yes
+   - macOS:   System Settings -> Network -> DNS -> Add <SERVER_IP>
+   - DoH:     https://<DOMAIN>:8443/dns-query (append ?token=<TOKEN> if enabled)
+   - DoT:     <DOMAIN>:853
+
+3. Verify:
+   nslookup epicgames.com <SERVER_IP>
+   (Proxied domains resolve to <SERVER_PUBLIC_IP>; bypassed CDNs resolve directly.)

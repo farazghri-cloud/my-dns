@@ -59,6 +59,21 @@ type Client struct {
 	// subscriber can be shown last month beside this month without the daemon
 	// storing a usage history per account.
 	TrafficPrevCycleBytes uint64 `json:"traffic_prev_cycle_bytes"`
+
+	// Granular per-client policy scoping (override global defaults & download CDN bypass)
+	AllowedPolicies []string `json:"allowed_policies,omitempty"`
+	AllowDownloads  bool     `json:"allow_downloads"`
+	UseCustomScope  bool     `json:"use_custom_scope"`
+}
+
+// CustomRule defines a persistent manual domain routing rule (exact or wildcard).
+type CustomRule struct {
+	ID        string    `json:"id"`
+	Domain    string    `json:"domain"`
+	Action    string    `json:"action"` // "proxy" or "direct"
+	Enabled   bool      `json:"enabled"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Policy represents a rule toggle or custom domain list

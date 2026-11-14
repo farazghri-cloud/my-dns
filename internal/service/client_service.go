@@ -77,7 +77,10 @@ type UpdateClientRequest struct {
 	DaysToAdd      *int       `json:"days_to_add"`
 	Enabled        *bool      `json:"enabled"`
 	Note           *string    `json:"note"`
-	CustomPolicies *[]string  `json:"custom_policies"`
+	CustomPolicies  *[]string  `json:"custom_policies"`
+	AllowedPolicies *[]string  `json:"allowed_policies"`
+	AllowDownloads  *bool      `json:"allow_downloads"`
+	UseCustomScope  *bool      `json:"use_custom_scope"`
 
 	// TrafficResetCycle is "", "daily", "weekly" or "monthly". Switching a cycle on
 	// anchors it at the moment of the request, so the first rollover is a whole
@@ -341,8 +344,11 @@ type CreateClientRequest struct {
 	TrafficLimitGB    float64
 	TrafficResetCycle string
 
-	Note           string
-	CustomPolicies []string
+	Note            string
+	CustomPolicies  []string
+	AllowedPolicies []string
+	AllowDownloads  bool
+	UseCustomScope  bool
 }
 
 // ProvisionClient creates a subscriber account from a full plan in a single write.
@@ -414,6 +420,10 @@ func (s *ClientService) ProvisionClient(req CreateClientRequest) (*database.Clie
 	if policies == nil {
 		policies = []string{}
 	}
+	allowedPolicies := req.AllowedPolicies
+	if allowedPolicies == nil {
+		allowedPolicies = []string{}
+	}
 
 	client := database.Client{
 		ID:             id,
@@ -426,7 +436,10 @@ func (s *ClientService) ProvisionClient(req CreateClientRequest) (*database.Clie
 		CreatedAt:      now,
 		Enabled:        true,
 		Note:           req.Note,
-		CustomPolicies: policies,
+		CustomPolicies:  policies,
+		AllowedPolicies: allowedPolicies,
+		AllowDownloads:  req.AllowDownloads,
+		UseCustomScope:  req.UseCustomScope,
 
 		RegisterSecret: registerSecret,
 
@@ -512,6 +525,15 @@ func (s *ClientService) UpdateClient(id string, req UpdateClientRequest) (*datab
 	}
 	if req.CustomPolicies != nil {
 		client.CustomPolicies = *req.CustomPolicies
+	}
+	if req.AllowedPolicies != nil {
+		client.AllowedPolicies = *req.AllowedPolicies
+	}
+	if req.AllowDownloads != nil {
+		client.AllowDownloads = *req.AllowDownloads
+	}
+	if req.UseCustomScope != nil {
+		client.UseCustomScope = *req.UseCustomScope
 	}
 
 	if err := s.db.SaveClient(*client); err != nil {

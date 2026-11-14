@@ -4,6 +4,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+
+	"hyperdns/internal/database"
 )
 
 type Action int
@@ -280,9 +282,11 @@ func (rs *ruleSet) size() int {
 // policyFilter decides whether a matched rule may be returned. perClient is false
 // for the global view, where only the operator's disable switches apply.
 type policyFilter struct {
-	disabled  map[string]bool
-	policies  []string
-	perClient bool
+	disabled       map[string]bool
+	policies       []string
+	perClient      bool
+	strictScope    bool
+	allowDownloads bool
 }
 
 func (f policyFilter) accept(rule string) bool {
@@ -292,6 +296,16 @@ func (f policyFilter) accept(rule string) bool {
 	// name either.
 	if isForcedDirect(rule) {
 		return true
+	}
+	if f.strictScope {
+		if rule == RuleDownloads {
+			return f.allowDownloads
+		}
+		switch rule {
+		case RuleCustomDirect, RuleCustomBlock, RuleCustomProxy:
+			return true
+		}
+		return policyAllows(f.policies, rule)
 	}
 	if f.disabled[rule] {
 		return false
@@ -321,6 +335,7 @@ type Matcher struct {
 	proxied       *ruleSet
 	downloads     *ruleSet
 	customRecords map[string]string // domain -> IP override
+	customRouter  *CustomRouter
 }
 
 func NewMatcher() *Matcher {
@@ -332,6 +347,7 @@ func NewMatcher() *Matcher {
 		proxied:       newRuleSet(),
 		downloads:     newRuleSet(),
 		customRecords: make(map[string]string),
+		customRouter:  NewCustomRouter(),
 	}
 	// Blocking categories start off, and so does the download veto. A resolver that
 	// begins sinkholing names because a config key was absent is worse than one that
@@ -463,32 +479,77 @@ func normalizeDomain(domain string) string {
 	return strings.ToLower(d)
 }
 
+// CustomRouter returns the lockless dynamic manual domain router.
+func (m *Matcher) CustomRouter() *CustomRouter {
+	return m.customRouter
+}
+
+// ReloadCustomRules atomically hot-reloads persisted manual custom domain rules.
+func (m *Matcher) ReloadCustomRules(rules []database.CustomRule) {
+	if m.customRouter != nil {
+		m.customRouter.Reload(rules)
+	}
+}
+
+// IsDownloadCDNDomain reports whether domain belongs to a known heavy game/CDN download host.
+func (m *Matcher) IsDownloadCDNDomain(domain string) bool {
+	d := normalizeDomain(domain)
+	if d == "" {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.downloads.lookup(d, acceptAll)
+	return ok
+}
+
 // Match resolves a domain against the global rule set.
 func (m *Matcher) Match(domain string) (Action, string) {
-	return m.match(domain, nil)
+	return m.matchWithFilter(domain, false, nil, false)
 }
 
 // MatchForClient resolves a domain honoring a client's own policy selection. An
 // empty selection inherits the global rules.
 func (m *Matcher) MatchForClient(domain string, clientPolicies []string) (Action, string) {
-	return m.match(domain, clientPolicies)
+	return m.matchWithFilter(domain, false, clientPolicies, false)
 }
 
-// match is the single implementation behind both entry points, so the global and
-// per-client paths cannot drift apart in precedence or in rule handling.
+// MatchForScopedClient evaluates a domain using explicit per-client policy scope
+// (overriding global defaults) and per-client download CDN bypass control.
+func (m *Matcher) MatchForScopedClient(domain string, allowedPolicies []string, allowDownloads bool) (Action, string) {
+	return m.matchWithFilter(domain, true, allowedPolicies, allowDownloads)
+}
+
+// match is kept as internal helper forwarding to matchWithFilter.
 func (m *Matcher) match(domain string, policies []string) (Action, string) {
+	return m.matchWithFilter(domain, false, policies, false)
+}
+
+func (m *Matcher) matchWithFilter(domain string, strictScope bool, policies []string, allowDownloads bool) (Action, string) {
 	d := normalizeDomain(domain)
 	if d == "" {
 		return ActionDirect, "Direct"
+	}
+
+	// Dynamic manual domain rules override presets with zero lock contention.
+	if m.customRouter != nil {
+		if act, ok := m.customRouter.Match(d); ok {
+			if act == "proxy" {
+				return ActionProxy, "Custom Domain (Proxy)"
+			}
+			return ActionDirect, "Custom Domain (Direct)"
+		}
 	}
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	f := policyFilter{
-		disabled:  m.disabledRules,
-		policies:  policies,
-		perClient: hasPolicy(policies),
+		disabled:       m.disabledRules,
+		policies:       policies,
+		perClient:      hasPolicy(policies),
+		strictScope:    strictScope,
+		allowDownloads: allowDownloads,
 	}
 
 	// Precedence: the operator's whitelist, then blocks, then the forced-direct

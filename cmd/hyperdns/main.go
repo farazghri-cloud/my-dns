@@ -990,6 +990,10 @@ func loadPersistedRules(db *database.DB, m *matcher.Matcher) {
 	}
 
 	m.SetCustomRules(customProxied, customBlocked, customDirect, customRecords)
+	if customRules, err := db.ListCustomRules(); err == nil {
+		m.ReloadCustomRules(customRules)
+		log.Printf("[Main] Loaded %d custom domain routing rule(s) into atomic router", len(customRules))
+	}
 	log.Printf("[Main] Restored %d policy toggle(s) and custom rule lists from database", applied)
 }
 

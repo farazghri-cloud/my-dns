@@ -4797,6 +4797,10 @@ function showToast(msg, type = 'info') {
       // catalogue so they read as labels: an operator who only glances at the
       // attached policies should read "Riot Games & Valorant", not "enable_riot".
       editPolicyPicker.set(Array.isArray(client.custom_policies) ? client.custom_policies : []);
+      const scopeCheck = document.getElementById('edit-client-use-custom-scope');
+      if (scopeCheck) scopeCheck.checked = !!client.use_custom_scope;
+      const dlCheck = document.getElementById('edit-client-allow-downloads');
+      if (dlCheck) dlCheck.checked = !!client.allow_downloads;
 
       if (editClientModal) editClientModal.classList.remove('hidden');
       safeFeatherReplace();
@@ -4917,7 +4921,10 @@ function showToast(msg, type = 'info') {
         expires_at: expiresAtISO,
         enabled: isEnabled,
         note: note,
-        custom_policies: editPolicyPicker.get()
+        custom_policies: editPolicyPicker.get(),
+        allowed_policies: editPolicyPicker.get(),
+        use_custom_scope: document.getElementById('edit-client-use-custom-scope') ? document.getElementById('edit-client-use-custom-scope').checked : false,
+        allow_downloads: document.getElementById('edit-client-allow-downloads') ? document.getElementById('edit-client-allow-downloads').checked : false
       };
 
       try {
@@ -4943,5 +4950,103 @@ function showToast(msg, type = 'info') {
       } catch (err) {
         showToast('Network error updating client', 'error');
       }
+    });
+  }
+
+  // =======================================================
+  // CUSTOM MANUAL DOMAIN ROUTING MANAGEMENT
+  // =======================================================
+  async function loadCustomDomainRules() {
+    const listBody = document.getElementById('custom-rules-table-body');
+    if (!listBody) return;
+    try {
+      const res = await fetch(api('/api/custom-rules'), {
+        headers: { 'Authorization': `Bearer ${authToken}` }
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      const rules = data.items || [];
+      if (rules.length === 0) {
+        listBody.innerHTML = '<div class="p-4 text-center text-slate-500 text-xs">No manual domain routing rules configured yet.</div>';
+        return;
+      }
+      let html = '';
+      rules.forEach((r) => {
+        const isProxy = r.action === 'proxy';
+        const actionBadge = isProxy 
+          ? '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-cyan-500/20 text-cyan-400">PROXY</span>'
+          : '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-400">DIRECT</span>';
+        html += `<div class="p-3 flex items-center justify-between gap-3">
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="font-mono text-xs text-white truncate">${escapeHTML(r.domain)}</span>
+            ${actionBadge}
+          </div>
+          <button type="button" data-rule-id="${escapeHTML(r.id)}" class="delete-custom-rule-btn p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition">
+            <i data-feather="trash-2" class="w-3.5 h-3.5"></i>
+          </button>
+        </div>`;
+      });
+      listBody.innerHTML = html;
+      safeFeatherReplace();
+
+      listBody.querySelectorAll('.delete-custom-rule-btn').forEach((btn) => {
+        btn.addEventListener('click', async (ev) => {
+          const ruleId = ev.currentTarget.getAttribute('data-rule-id');
+          if (!ruleId) return;
+          try {
+            const delRes = await fetch(api(`/api/custom-rules/${ruleId}`), {
+              method: 'DELETE',
+              headers: { 'Authorization': `Bearer ${authToken}` }
+            });
+            if (delRes.ok) {
+              showToast('Custom domain rule deleted', 'success');
+              loadCustomDomainRules();
+            }
+          } catch (_) {
+            showToast('Failed to delete custom rule', 'error');
+          }
+        });
+      });
+    } catch (_) {}
+  }
+
+  const addRuleBtn = document.getElementById('custom-rule-add-btn');
+  if (addRuleBtn) {
+    addRuleBtn.addEventListener('click', async () => {
+      const domInput = document.getElementById('custom-rule-domain-input');
+      const actSelect = document.getElementById('custom-rule-action-select');
+      const domain = domInput ? domInput.value.trim() : '';
+      const action = actSelect ? actSelect.value : 'proxy';
+      if (!domain) {
+        showToast('Please enter a domain or wildcard pattern', 'error');
+        return;
+      }
+      try {
+        const res = await fetch(api('/api/custom-rules'), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${authToken}`
+          },
+          body: JSON.stringify({ domain: domain, action: action, enabled: true })
+        });
+        if (res.ok) {
+          showToast('Custom domain rule added successfully!', 'success');
+          if (domInput) domInput.value = '';
+          loadCustomDomainRules();
+        } else {
+          showToast(await errorMessage(res, 'Failed to save custom rule'), 'error');
+        }
+      } catch (_) {
+        showToast('Network error saving custom rule', 'error');
+      }
+    });
+  }
+
+  // Hook into tab switches or auth ready
+  const rulesTabBtn = document.querySelector('[data-tab="rules"]');
+  if (rulesTabBtn) {
+    rulesTabBtn.addEventListener('click', () => {
+      loadCustomDomainRules();
     });
   }

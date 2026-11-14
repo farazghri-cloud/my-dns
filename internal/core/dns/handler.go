@@ -51,6 +51,10 @@ type Handler struct {
 	limited atomic.Uint64
 }
 
+func (h *Handler) Matcher() *matcher.Matcher {
+	return h.matcher
+}
+
 func NewHandler(
 	access AccessProvider,
 	c *cache.Cache,
@@ -450,10 +454,12 @@ func (h *Handler) ProcessQuery(r *dns.Msg, clientIP string, protocol ...string) 
 		}
 	}
 
-	// 4. Rule matcher (honoring per-client policy exceptions if configured)
+	// 4. Rule matcher (honoring per-client scoping, download CDN bypass, and custom rules)
 	var action matcher.Action
 	var ruleName string
-	if activeClient != nil && len(activeClient.CustomPolicies) > 0 {
+	if activeClient != nil && activeClient.UseCustomScope {
+		action, ruleName = h.matcher.MatchForScopedClient(domain, activeClient.AllowedPolicies, activeClient.AllowDownloads)
+	} else if activeClient != nil && len(activeClient.CustomPolicies) > 0 {
 		action, ruleName = h.matcher.MatchForClient(domain, activeClient.CustomPolicies)
 	} else {
 		action, ruleName = h.matcher.Match(domain)

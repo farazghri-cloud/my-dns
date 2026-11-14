@@ -89,6 +89,9 @@ type encClient struct {
 	TrafficResetAnchor    time.Time `json:"traffic_reset_anchor"`
 	TrafficResetCount     uint64    `json:"traffic_reset_count"`
 	TrafficPrevCycleBytes uint64    `json:"traffic_prev_cycle_bytes"`
+	AllowedPolicies       []string  `json:"allowed_policies,omitempty"`
+	AllowDownloads        bool      `json:"allow_downloads"`
+	UseCustomScope        bool      `json:"use_custom_scope"`
 }
 
 // plainToken returns the plaintext subscription token of a stored record,
@@ -210,6 +213,9 @@ func (db *DB) packClient(c Client) ([]byte, error) {
 		TrafficResetAnchor:    c.TrafficResetAnchor,
 		TrafficResetCount:     c.TrafficResetCount,
 		TrafficPrevCycleBytes: c.TrafficPrevCycleBytes,
+		AllowedPolicies:       c.AllowedPolicies,
+		AllowDownloads:        c.AllowDownloads,
+		UseCustomScope:        c.UseCustomScope,
 	}
 
 	return json.Marshal(enc)
@@ -253,6 +259,10 @@ func (db *DB) unpackClient(data []byte) (*Client, error) {
 	if customPolicies == nil {
 		customPolicies = []string{}
 	}
+	allowedPolicies := enc.AllowedPolicies
+	if allowedPolicies == nil {
+		allowedPolicies = []string{}
+	}
 
 	// Decrypt the register secret. An empty value is the legacy shape — records
 	// written before Phase B have none, and the client service backfills one.
@@ -284,6 +294,9 @@ func (db *DB) unpackClient(data []byte) (*Client, error) {
 		TrafficResetAnchor:    enc.TrafficResetAnchor,
 		TrafficResetCount:     enc.TrafficResetCount,
 		TrafficPrevCycleBytes: enc.TrafficPrevCycleBytes,
+		AllowedPolicies:       allowedPolicies,
+		AllowDownloads:        enc.AllowDownloads,
+		UseCustomScope:        enc.UseCustomScope,
 	}, nil
 }
 
