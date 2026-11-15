@@ -6,6 +6,10 @@
 #   sudo HYPERDNS_DOMAIN=dns.example.com HYPERDNS_EMAIL=you@example.com \
 #        bash scripts/install-ubuntu24.sh
 #
+# One-line form (no checkout on the server needed — the script fetches the repo):
+#   curl -fsSL https://raw.githubusercontent.com/farazghri-cloud/my-dns/main/scripts/install-ubuntu24.sh \
+#     | sudo HYPERDNS_DOMAIN=dns.example.com HYPERDNS_EMAIL=you@example.com bash
+#
 # Why this script exists next to scripts/install.sh:
 #
 #   install.sh installs a pre-built binary that ships inside the release bundle.
@@ -44,9 +48,16 @@ GO_DOWNLOAD_VERSION="1.27.4"
 DOMAIN="${HYPERDNS_DOMAIN:-}"
 EMAIL="${HYPERDNS_EMAIL:-}"
 PANEL_PORT="${HYPERDNS_PANEL_PORT:-8080}"
+# Where the one-line form fetches the source from. Point these at a fork or a
+# tag when you need to install something other than main.
+REPO_URL="${HYPERDNS_REPO:-https://github.com/farazghri-cloud/my-dns.git}"
+REPO_REF="${HYPERDNS_REF:-main}"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# Under `curl | bash` there is no ${BASH_SOURCE[0]} to take a directory from, so
+# this is best-effort and the dependency step below decides whether it found a
+# checkout or has to fetch one.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || pwd)"
+SRC_DIR="$(cd "${SCRIPT_DIR}/.." 2>/dev/null && pwd || pwd)"
 
 # ---------------------------------------------------------------- 1. pre-flight
 say "${CYAN}${BOLD}HyperDNS — Ubuntu 24.04 source installer${NC}"
@@ -66,9 +77,11 @@ case "${OS_ID}" in
     *)       warn "Untested distribution '${OS_ID}' — continuing, but systemd and apt are assumed." ;;
 esac
 
-[ -f "${SRC_DIR}/go.mod" ] || die "No go.mod in ${SRC_DIR}. Run this script from a checkout of the project (scripts/install-ubuntu24.sh)."
-[ -f "${SRC_DIR}/cmd/hyperdns/main.go" ] || die "${SRC_DIR}/cmd/hyperdns/main.go is missing — is this a full checkout?"
-ok "Source tree: ${SRC_DIR}"
+if [ -f "${SRC_DIR}/cmd/hyperdns/main.go" ]; then
+    ok "Source tree: ${SRC_DIR}"
+else
+    warn "No source checkout beside this script (piped install) — the repository is fetched in the next step"
+fi
 
 # Interactivity. A piped `curl | bash` run has no terminal to answer prompts, so
 # every question it would ask is answerable by environment variable instead and
@@ -81,11 +94,28 @@ say "${CYAN}${BOLD}[1/7]${NC} Build dependencies"
 export DEBIAN_FRONTEND=noninteractive
 if command -v apt-get >/dev/null 2>&1; then
     apt-get update -qq
-    apt-get install -y -qq --no-install-recommends ca-certificates curl tar >/dev/null
-    ok "curl, ca-certificates, tar present"
+    apt-get install -y -qq --no-install-recommends ca-certificates curl tar git >/dev/null
+    ok "curl, ca-certificates, tar, git present"
 else
     warn "apt-get not found; assuming curl/tar are already available"
 fi
+
+# Source. The one-line form (`curl | sudo bash`) has no checkout on disk, so the
+# tree is cloned into a scratch directory and built there. Nothing of this clone is
+# installed: only the compiled binary moves to /opt/hyperdns.
+if [ ! -f "${SRC_DIR}/cmd/hyperdns/main.go" ]; then
+    say "  Fetching ${REPO_URL} (${REPO_REF})"
+    FETCH_DIR="$(mktemp -d /tmp/hyperdns-src.XXXXXX)"
+    if git clone --depth 1 --branch "${REPO_REF}" "${REPO_URL}" "${FETCH_DIR}" >/dev/null 2>&1; then
+        SRC_DIR="${FETCH_DIR}"
+        ok "Source fetched: $(cd "${SRC_DIR}" && git log -1 --format='%h %s' 2>/dev/null | cut -c1-72)"
+    else
+        rm -rf "${FETCH_DIR}"
+        die "Could not clone ${REPO_URL} at ref '${REPO_REF}'. Check that the repository and branch exist, or copy the source and run scripts/install-ubuntu24.sh from it."
+    fi
+fi
+[ -f "${SRC_DIR}/cmd/hyperdns/main.go" ] || die "${SRC_DIR} has no cmd/hyperdns/main.go — the fetched tree is not the daemon"
+[ -f "${SRC_DIR}/go.mod" ] || die "${SRC_DIR}/go.mod is missing — the fetched tree is incomplete"
 
 # Go toolchain. A distribution Go on 24.04 is 1.22 — too old for a go.mod that
 # says 1.26 — so the version is checked, not just the presence of the command.
