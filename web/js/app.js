@@ -899,6 +899,9 @@ function renderConfig(cfg) {
   renderList('custom-blocked-list', cfg.rules?.custom_blocked || [], 'remove-blocked');
   renderList('tokens-list', cfg.access?.doh_tokens || [], 'remove-token');
   renderCustomRecords(cfg.rules?.custom_records || {});
+  // The Manual Routes panel at the end of Gaming Policies reads the same list as
+  // the Custom Proxied box in Settings, on purpose: one list, two places to see it.
+  renderManualRoutes(cfg.rules?.custom_proxied || []);
 }
 
 function setSwitch(id, val) {
@@ -935,6 +938,180 @@ function renderList(containerId, items, removeClass) {
     container.appendChild(row);
   });
   safeFeatherReplace();
+}
+
+// manualRouteKind mirrors matcher.RouteKind on the server. It exists for the badge
+// on each row, and it derives the label from the stored string rather than from a
+// second field, so a list written by an older build still renders correctly.
+function manualRouteKind(domain) {
+  const d = String(domain || '').toLowerCase();
+  if (d.startsWith('*.')) return 'wildcard';
+  if ((d.match(/\./g) || []).length >= 2) return 'host';
+  return 'domain';
+}
+
+const MANUAL_ROUTE_BADGES = {
+  wildcard: {
+    label: 'WILDCARD',
+    classes: 'text-purple-300 border-purple-500/40 bg-purple-500/10',
+    hint: 'Subdomains only — the apex itself is not covered',
+  },
+  host: {
+    label: 'SUBDOMAIN',
+    classes: 'text-cyan-300 border-cyan-500/40 bg-cyan-500/10',
+    hint: 'One host, plus anything under it',
+  },
+  domain: {
+    label: 'DOMAIN',
+    classes: 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10',
+    hint: 'The site and every subdomain of it',
+  },
+};
+
+// renderManualRoutes draws the panel at the end of Gaming Policies. The rows are
+// operator-supplied strings that come back from the API, so every one of them is
+// escaped before it reaches innerHTML — the same rule renderList follows.
+function renderManualRoutes(routes) {
+  const list = document.getElementById('manual-routes-list');
+  const count = document.getElementById('manual-routes-count');
+  const items = Array.isArray(routes) ? routes : [];
+  if (count) count.textContent = items.length === 1 ? '1 route' : `${items.length} routes`;
+  if (!list) return;
+  list.innerHTML = '';
+  if (items.length === 0) {
+    list.innerHTML = '<div class="text-slate-500 text-xs py-1">No manual routes yet — the policies above are the whole rule set.</div>';
+    return;
+  }
+  // Rows are built node by node rather than from an innerHTML template. The domain
+  // is operator-supplied text that comes back from the API, and textContent cannot
+  // be talked into parsing it as markup — no escaping step to forget, no attribute
+  // to break out of.
+  items.forEach(domain => {
+    const badge = MANUAL_ROUTE_BADGES[manualRouteKind(domain)] || MANUAL_ROUTE_BADGES.domain;
+    const row = document.createElement('div');
+    row.className = 'flex items-center justify-between gap-2 py-1.5 px-3 rounded-lg bg-slate-950/60 border border-slate-800 text-xs';
+
+    const left = document.createElement('div');
+    left.className = 'flex items-center gap-2 min-w-0';
+
+    const kind = document.createElement('span');
+    kind.className = 'shrink-0 px-1.5 py-0.5 rounded border text-[9px] font-mono tracking-wider ' + badge.classes;
+    kind.textContent = badge.label;
+
+    const name = document.createElement('span');
+    name.className = 'font-mono text-white truncate';
+    name.textContent = domain;
+    name.title = badge.hint;
+
+    left.appendChild(kind);
+    left.appendChild(name);
+
+    const right = document.createElement('div');
+    right.className = 'flex items-center gap-2 shrink-0';
+
+    const plane = document.createElement('span');
+    plane.className = 'text-[9px] font-mono text-slate-500';
+    plane.textContent = 'DNS + SNI';
+
+    const remove = document.createElement('button');
+    remove.className = 'remove-route-btn inline-flex items-center justify-center w-6 h-6 rounded text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition';
+    remove.dataset.val = domain;
+    remove.setAttribute('aria-label', 'Remove route ' + domain);
+    remove.innerHTML = '<i data-feather="x" class="w-3.5 h-3.5"></i>';
+
+    right.appendChild(plane);
+    right.appendChild(remove);
+
+    row.appendChild(left);
+    row.appendChild(right);
+    list.appendChild(row);
+  });
+  safeFeatherReplace();
+}
+
+// addManualRoute posts one or more domains to /api/rules/manual and lets the server
+// be the judge of what a valid route is — the same parser the matcher indexes with,
+// so the panel cannot accept a row the resolver would ignore. The server's answer
+// carries the canonical spelling (lowercase, no scheme, no port), which is what gets
+// stored locally so the next render shows exactly what the daemon is using.
+//
+// A paste of several names (comma, space or newline separated) is walked one at a
+// time: a list is how operators actually keep these, and one bad name in a paste
+// should not throw away the good ones.
+async function addManualRoute(raw) {
+  if (!currentConfig) return;
+  const values = String(raw || '').split(/[\s,]+/).map(v => v.trim()).filter(Boolean);
+  if (values.length === 0) {
+    showToast('Type a domain, subdomain or wildcard first.', 'info');
+    return;
+  }
+  const btn = document.getElementById('add-manual-route-btn');
+  if (btn) btn.disabled = true;
+  const added = [];
+  const refused = [];
+  try {
+    for (const value of values) {
+      let data = {};
+      try {
+        const res = await fetch(api('/api/rules/manual'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
+          body: JSON.stringify({ domain: value })
+        });
+        if (res.status === 401) { showLoginModal(); return; }
+        data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          refused.push(data.error || `${value} could not be added.`);
+          continue;
+        }
+      } catch (e) {
+        refused.push('Could not reach the server to add ' + value + '.');
+        continue;
+      }
+      if (!Array.isArray(currentConfig.rules.custom_proxied)) currentConfig.rules.custom_proxied = [];
+      if (!currentConfig.rules.custom_proxied.includes(data.domain)) {
+        currentConfig.rules.custom_proxied.push(data.domain);
+        added.push(`${data.domain} (${data.kind})`);
+      }
+    }
+    const input = document.getElementById('new-manual-route-input');
+    if (added.length > 0 && input) { input.value = ''; input.focus(); }
+    renderConfig(currentConfig);
+    if (added.length === 1 && refused.length === 0) {
+      showToast(`Route added — ${added[0]}`, 'success');
+    } else if (added.length > 0) {
+      showToast(`${added.length} route(s) added${refused.length ? `, ${refused.length} refused` : ''}`, 'success');
+    }
+    if (refused.length > 0) showToast(refused.join(' · '), 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// removeManualRoute deletes one row. The list is the proxy's rule set, so removal
+// takes effect immediately on the live matcher; the cache flush happens server-side.
+async function removeManualRoute(domain) {
+  if (!currentConfig) return;
+  try {
+    const res = await fetch(api('/api/rules/manual?domain=' + encodeURIComponent(domain)), {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${authToken}` }
+    });
+    if (res.status === 401) { showLoginModal(); return; }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showToast(data.error || 'That route could not be removed.', 'error');
+      return;
+    }
+    const gone = data.domain || domain;
+    if (Array.isArray(currentConfig.rules.custom_proxied)) {
+      currentConfig.rules.custom_proxied = currentConfig.rules.custom_proxied.filter(x => x !== gone);
+    }
+    renderConfig(currentConfig);
+    showToast(`Route removed — ${gone}`, 'info');
+  } catch (e) {
+    showToast('Could not reach the server to remove that route.', 'error');
+  }
 }
 
 function renderCustomRecords(records) {
@@ -2657,6 +2834,20 @@ function initEventListeners() {
     };
   }
 
+  // Manual Routes — the panel at the end of Gaming Policies. Add on click and on
+  // Enter, because an operator pasting a list of domains types one and hits return.
+  document.getElementById('add-manual-route-btn')?.addEventListener('click', () => {
+    const input = document.getElementById('new-manual-route-input');
+    addManualRoute(input ? input.value : '');
+  });
+
+  document.getElementById('new-manual-route-input')?.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    // The field can sit inside the policy form; Enter must add a route, not submit.
+    e.preventDefault();
+    addManualRoute(e.target.value);
+  });
+
   // Add Custom Proxied
   document.getElementById('add-proxied-btn')?.addEventListener('click', () => {
     const input = document.getElementById('new-proxied-input');
@@ -2746,6 +2937,8 @@ function initEventListeners() {
         showToast('Upstream removed', 'info');
         updateStats();
       } catch (err) {}
+    } else if (btn.classList.contains('remove-route-btn')) {
+      removeManualRoute(btn.dataset.val);
     } else if (btn.classList.contains('remove-proxied')) {
       const val = btn.dataset.val;
       if (currentConfig) {

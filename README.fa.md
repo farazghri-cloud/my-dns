@@ -45,6 +45,8 @@
 | **[docs/PRESET_CATALOG.md](docs/PRESET_CATALOG.md)** | کاتالوگ جامع بیش از ۱۷۱ بازی، پلتفرم و سرویس، تفکیک‌شده بر اساس دسته‌بندی. |
 | **[docs/CHANGELOG.md](docs/CHANGELOG.md)** | تاریخچهٔ کامل انتشار نسخه‌ها و باگ‌های رفع‌شده. |
 | **[docs/TUTORIAL.fa.md](docs/TUTORIAL.fa.md)** | آموزش گام‌به‌گام و کامل: از خرید سرور تا اضافه‌کردن کلاینت و دامنهٔ کاستوم برای پورتال مشترکین. **بهترین نقطهٔ شروع.** |
+| **[docs/MANUAL_ROUTES.md](docs/MANUAL_ROUTES.md)** | مسیرهای دستی: افزودن دامنه، ساب‌دامنه، وایلدکارد و میزبان SNI به‌صورت دستی، در کنار مسیرهای پیش‌فرض. |
+| **[docs/DEPLOY-UBUNTU24.fa.md](docs/DEPLOY-UBUNTU24.fa.md)** | راهنمای نصب روی اوبونتو ۲۴.۰۴، از ساخت سورس تا سرویس systemd و عیب‌یابی. |
 
 ---
 
@@ -156,6 +158,21 @@ docker compose up -d
 - **دستیارها و پلتفرم‌های هوش مصنوعی (نسخهٔ ۲.۲.۰):** Copilot, Perplexity, Grok, DeepSeek, Mistral, OpenRouter و موارد بیشتر.
 - **شبکه‌های اجتماعی و پیام‌رسان‌ها (نسخهٔ ۲.۲.۰):** X (توییتر سابق)، Instagram, Facebook, WhatsApp, Telegram, Reddit.
 - **دور زدن تحریم توسعه‌دهندگان (۴۰۳):** Docker Hub, Gradle, Android Developers, NPM, PyPI, OpenAI, Anthropic, Claude, Hugging Face, Cursor, Copilot, Kaggle.
+
+### 🧩 ۱.۱. مسیرهای دستی — دامنه، ساب‌دامنه، وایلدکارد و SNI
+
+انتهای بخش **Gaming Policies** در تب Policies یک کارت به نام
+**Manual Routes** اضافه شده است: هر دامنه، ساب‌دامنه، الگوی `*.domain` یا میزبان
+SNI را دستی وارد می‌کنید و DNS علاوه بر مسیرهای پیش‌فرض، از این مسیرها هم عبور
+می‌کند — نه به‌جای آن‌ها.
+
+- ورودی URL کامل، پورت و نقطهٔ پایانی خودکار پاک می‌شود (`https://Foo.com/x` → `foo.com`).
+- ورودی نامعتبر (IP، TLD تنها، وایلدکارد در وسط، حروف غیرانگلیسی) با پیام مشخص رد می‌شود.
+- روی همهٔ کلاینت‌ها اعمال می‌شود، حتی مشترکینی که سیاست اختصاصی دارند.
+- تغییر بلافاصله روی resolver اعمال و کش پاک می‌شود؛ ری‌استارت لازم نیست.
+- همان لیست در Settings → Custom Proxied Domains هم دیده می‌شود (یک لیست، دو نما).
+
+جزئیات کامل: **[docs/MANUAL_ROUTES.md](docs/MANUAL_ROUTES.md)**
 
 ### 🛡️ ۲. رلهٔ پراکسی شفاف SNI (Transparent SNI Proxy)
 - رلهٔ ترافیک در لایه ۴ روی TCP بدون خاتمه دادن به نشست SSL (بدون SSL Termination): ارتباط TLS به‌صورت سرتاسری بین کاربر و سرور اصلی باقی می‌ماند و HyperDNS هرگز کلیدهای رمزنگاری آن را در اختیار ندارد.

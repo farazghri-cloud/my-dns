@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## 🧩 [unreleased] — Manual Routes (local fork)
+
+### ✨ Added
+- **Manual Routes panel at the end of Gaming Policies.** The operator can now type a domain, subdomain, `*.domain` wildcard or SNI host by hand and have it proxied *in addition to* the preset catalog. Each row carries a `DOMAIN` / `SUBDOMAIN` / `WILDCARD` badge and a `DNS + SNI` marker, and is removable in place. Backed by the existing `custom_proxied` list, so the Settings → Custom Proxied Domains box and the new panel are two views of one list, and a preset toggle cannot wipe it.
+- **`POST`/`DELETE /api/rules/manual`** — a one-row endpoint for the panel, with real validation feedback (400 with the reason, 409 for a duplicate, 404 for a missing row) instead of the write-only rules blob. `GET` returns the list with each row's kind.
+- **One canonical form for every input shape.** `NormalizeManualRoute` (and `NormalizeRouteList`) strip scheme, path, query, userinfo, port, trailing dot, leading dot and stray quotes; lowercase the name; and refuse what the resolver cannot use — bare IPs, single labels, mid-name wildcards, empty labels, hyphen-edged labels, numeric last labels, non-ASCII (punycode is suggested). Applied on save *and* on load, so a list written by an older build renders in the form the matcher actually indexes.
+- **`scripts/install-ubuntu24.sh`** — an Ubuntu 24.04 / Debian 12 installer that builds the daemon from this source tree (installing a Go toolchain only when the host has none new enough), preserves `config.json` / `data.db` / `master.key` / `certs` across upgrades, archives the previous install, frees port 53 from `systemd-resolved`, and prints the panel URL and first-run credentials.
+- **Docs:** `docs/MANUAL_ROUTES.md` (semantics, precedence, API, verification) and `docs/DEPLOY-UBUNTU24.fa.md` (Persian deployment guide).
+
+### 🐞 Fixed
+- **An emptied custom domain list is stored as `[]`, not `null`.** `loadRulesConfig` and `persistCustomRules` now normalise nil to an empty slice; a `null` list on the wire reads as "not loaded yet" to the dashboard's save path, which is how a deleted list could come back.
+
+---
+
 ## 🔐 [v2.2.0-beta.1] — Whitelist by Default, Built-In ACME, API v2, Google/AI Presets & a Real Console
 
 ### ✨ Added

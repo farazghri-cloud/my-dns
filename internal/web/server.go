@@ -654,6 +654,7 @@ func (ws *WebServer) buildAdminMux() *http.ServeMux {
 	mux.HandleFunc("/api/config/rules", ws.requireAuth(ws.handleConfigRules))
 	mux.HandleFunc("/api/config/access", ws.requireAuth(ws.handleConfigAccess))
 	mux.HandleFunc("/api/config/server", ws.requireAuth(ws.handleConfigServer))
+	mux.HandleFunc("/api/rules/manual", ws.requireAuth(ws.handleManualRoutes))
 
 	// 6. Internal Dashboard Ajax APIs (all authenticated)
 	mux.HandleFunc("/api/diagnostics/run", ws.requireAuth(ws.handleDiagnosticsRun))
@@ -1265,7 +1266,17 @@ func (ws *WebServer) loadRulesConfig() map[string]any {
 		switch p.Key {
 		case "custom_proxied", "custom_blocked", "custom_direct":
 			if p.CustomDomains != nil {
-				rules[p.Key] = p.CustomDomains
+				// Canonicalised on the way out as well as on the way in, so a list
+				// written by an older build — or by hand in the database — is shown
+				// in the form the matcher actually indexes rather than as the raw
+				// string the operator once typed.
+				normalized, _ := matcher.NormalizeRouteList(p.CustomDomains)
+				if normalized == nil {
+					// An emptied list is [] on the wire, never null: the dashboard's
+					// save path treats null as "not loaded yet".
+					normalized = []string{}
+				}
+				rules[p.Key] = normalized
 			}
 		case "custom_records":
 			recs := map[string]string{}
@@ -1402,18 +1413,9 @@ func (ws *WebServer) handleConfigRules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var customProxied, customBlocked, customDirect []string
-	customRecords := map[string]string{}
-
 	// Start from the persisted state so a partial update (e.g. only a preset
 	// toggle in the payload) never wipes the saved custom domain lists.
-	persisted := ws.loadRulesConfig()
-	customProxied = toStringSlice(persisted["custom_proxied"])
-	customBlocked = toStringSlice(persisted["custom_blocked"])
-	customDirect = toStringSlice(persisted["custom_direct"])
-	if m, ok := persisted["custom_records"].(map[string]string); ok {
-		customRecords = m
-	}
+	customProxied, customBlocked, customDirect, customRecords := ws.loadCustomRules()
 
 	for key, val := range req {
 		if presetName, ok := matcher.PresetRuleKeys[key]; ok {
@@ -1455,25 +1457,187 @@ func (ws *WebServer) handleConfigRules(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Persist custom lists (encoded inside Policy.CustomDomains)
-	_ = ws.db.SavePolicy(database.Policy{Key: "custom_proxied", Name: "Custom Proxied Domains", Category: "custom", Enabled: true, CustomDomains: customProxied})
-	_ = ws.db.SavePolicy(database.Policy{Key: "custom_blocked", Name: "Custom Blocked Domains", Category: "custom", Enabled: true, CustomDomains: customBlocked})
-	_ = ws.db.SavePolicy(database.Policy{Key: "custom_direct", Name: "Custom Direct Domains", Category: "custom", Enabled: true, CustomDomains: customDirect})
-	recordEntries := make([]string, 0, len(customRecords))
-	for d, ip := range customRecords {
+	// Canonicalise the operator's lists before they are stored. Everything the
+	// Manual Routes panel accepts — a pasted URL, a port, odd case, a trailing
+	// dot, a duplicate — comes out of here in the one form the matcher indexes,
+	// and anything that cannot work is reported rather than saved as a row that
+	// silently matches nothing.
+	customProxied, droppedProxied := matcher.NormalizeRouteList(customProxied)
+	customBlocked, droppedBlocked := matcher.NormalizeRouteList(customBlocked)
+	customDirect, droppedDirect := matcher.NormalizeRouteList(customDirect)
+
+	ws.persistCustomRules(customProxied, customBlocked, customDirect, customRecords)
+
+	resp := map[string]any{"success": true}
+	if dropped := append(append(droppedProxied, droppedBlocked...), droppedDirect...); len(dropped) > 0 {
+		resp["dropped"] = dropped
+	}
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// loadCustomRules reads the operator's three domain lists and the custom A record
+// map out of the policies bucket, in the shape the rest of the package works with.
+func (ws *WebServer) loadCustomRules() (proxied, blocked, direct []string, records map[string]string) {
+	persisted := ws.loadRulesConfig()
+	proxied = toStringSlice(persisted["custom_proxied"])
+	blocked = toStringSlice(persisted["custom_blocked"])
+	direct = toStringSlice(persisted["custom_direct"])
+	records = map[string]string{}
+	if m, ok := persisted["custom_records"].(map[string]string); ok {
+		records = m
+	}
+	return proxied, blocked, direct, records
+}
+
+// persistCustomRules writes all four custom rule surfaces and then applies them to
+// the live matcher, flushing the cache so answers produced under the previous
+// rules stop being served. Shared by the full rules save and the Manual Routes
+// endpoint, which is what keeps a route added from the panel and a route added by
+// posting the whole rules blob in exact agreement.
+func (ws *WebServer) persistCustomRules(proxied, blocked, direct []string, records map[string]string) {
+	// An emptied list is stored as [] rather than nil. A nil slice encodes to JSON
+	// null, and the dashboard's save path reads these back: null there is a list
+	// whose every operation has to test for null, which is exactly how a deleted
+	// list came back as "not loaded yet" and got overwritten.
+	if proxied == nil {
+		proxied = []string{}
+	}
+	if blocked == nil {
+		blocked = []string{}
+	}
+	if direct == nil {
+		direct = []string{}
+	}
+	_ = ws.db.SavePolicy(database.Policy{Key: "custom_proxied", Name: "Custom Proxied Domains", Category: "custom", Enabled: true, CustomDomains: proxied})
+	_ = ws.db.SavePolicy(database.Policy{Key: "custom_blocked", Name: "Custom Blocked Domains", Category: "custom", Enabled: true, CustomDomains: blocked})
+	_ = ws.db.SavePolicy(database.Policy{Key: "custom_direct", Name: "Custom Direct Domains", Category: "custom", Enabled: true, CustomDomains: direct})
+	recordEntries := make([]string, 0, len(records))
+	for d, ip := range records {
 		recordEntries = append(recordEntries, d+"="+ip)
 	}
 	_ = ws.db.SavePolicy(database.Policy{Key: "custom_records", Name: "Custom A Records", Category: "custom", Enabled: true, CustomDomains: recordEntries})
 
-	// Apply custom lists to the live matcher and flush stale cache entries
 	if ws.matcher != nil {
-		ws.matcher.SetCustomRules(customProxied, customBlocked, customDirect, customRecords)
+		ws.matcher.SetCustomRules(proxied, blocked, direct, records)
 	}
 	if ws.cache != nil {
 		ws.cache.Flush()
 	}
+}
 
-	_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
+// manualRoute is one row of the Manual Routes panel: the stored domain plus the
+// label the dashboard draws on it.
+type manualRoute struct {
+	Domain string `json:"domain"`
+	Kind   string `json:"kind"`
+}
+
+// manualRoutesView renders the proxied list in insertion order. Insertion order,
+// not sorted: the operator added these rows one at a time and expects to find them
+// where they left them.
+func manualRoutesView(proxied []string) []manualRoute {
+	out := make([]manualRoute, 0, len(proxied))
+	for _, d := range proxied {
+		out = append(out, manualRoute{Domain: d, Kind: matcher.RouteKind(d)})
+	}
+	return out
+}
+
+// handleManualRoutes serves the dashboard's Manual Routes panel: the operator's own
+// domains, subdomains, wildcards and SNI hosts, added one at a time and proxied in
+// addition to the presets.
+//
+// It exists as its own endpoint rather than as another field of
+// /api/config/rules for two reasons. A row added here has to be validated and the
+// rejection explained ("that is an IP address", "a wildcard is only the leftmost
+// label") before anything is written, and the full rules save is also the preset
+// toggle path — it carries thirty booleans and answers only {"success":true}, so
+// there is nowhere in it to say which of five pasted rows was the bad one. The
+// second: adding one domain should not require the dashboard to hold a correct copy
+// of every other setting, and a stale panel posting the whole blob is how custom
+// lists get overwritten in the first place.
+func (ws *WebServer) handleManualRoutes(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	proxied, blocked, direct, records := ws.loadCustomRules()
+
+	switch r.Method {
+	case http.MethodGet, http.MethodHead:
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"routes": manualRoutesView(proxied),
+			"count":  len(proxied),
+		})
+
+	case http.MethodPost:
+		var req struct {
+			Domain string `json:"domain"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&req); err != nil {
+			httpx.WriteJSONError(w, http.StatusBadRequest, "Invalid request payload")
+			return
+		}
+		name, err := matcher.NormalizeManualRoute(req.Domain)
+		if err != nil {
+			httpx.WriteJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if slices.Contains(proxied, name) {
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error":  name + " is already routed",
+				"domain": name,
+			})
+			return
+		}
+		proxied = append(proxied, name)
+		ws.persistCustomRules(proxied, blocked, direct, records)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"domain":  name,
+			"kind":    matcher.RouteKind(name),
+			"count":   len(proxied),
+			"routes":  manualRoutesView(proxied),
+		})
+
+	case http.MethodDelete:
+		raw := r.URL.Query().Get("domain")
+		if raw == "" {
+			var req struct {
+				Domain string `json:"domain"`
+			}
+			_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&req)
+			raw = req.Domain
+		}
+		name, err := matcher.NormalizeManualRoute(raw)
+		if err != nil {
+			httpx.WriteJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		kept := make([]string, 0, len(proxied))
+		for _, d := range proxied {
+			if d != name {
+				kept = append(kept, d)
+			}
+		}
+		if len(kept) == len(proxied) {
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error":  name + " is not in the manual routes list",
+				"domain": name,
+			})
+			return
+		}
+		ws.persistCustomRules(kept, blocked, direct, records)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"domain":  name,
+			"count":   len(kept),
+			"routes":  manualRoutesView(kept),
+		})
+
+	default:
+		httpx.WriteMethodNotAllowed(w, "GET, HEAD, POST, DELETE")
+	}
 }
 
 func (ws *WebServer) handleStats(w http.ResponseWriter, r *http.Request) {

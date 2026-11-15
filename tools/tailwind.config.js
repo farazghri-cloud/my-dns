@@ -111,6 +111,11 @@ module.exports = {
   safelist: [
     'text-emerald-400', 'text-red-400', 'text-amber-400', 'text-slate-300',
     'remove-proxied', 'remove-blocked', 'remove-token',
+    // Manual Routes badges: the three kind classes are chosen at render time from
+    // MANUAL_ROUTE_BADGES, so the scanner sees them only as a concatenation.
+    'text-purple-300', 'border-purple-500/40', 'bg-purple-500/10',
+    'text-cyan-300', 'border-cyan-500/40', 'bg-cyan-500/10',
+    'text-emerald-300', 'border-emerald-500/40', 'bg-emerald-500/10',
     'w-2', 'h-2', 'rounded-full', 'bg-slate-600', 'bg-emerald-400', 'bg-yellow-400', 'bg-red-400',
     'bg-slate-500/10', 'border-slate-600/40', 'bg-emerald-500/10', 'border-emerald-500/30',
     'bg-yellow-500/10', 'border-yellow-500/30', 'bg-red-500/10', 'border-red-500/30',

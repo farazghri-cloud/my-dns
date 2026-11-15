@@ -41,6 +41,8 @@
 | **[SECURITY.md](docs/SECURITY.md)** | Threat model, encryption specifics, hardening checklist, RFC compliance, vulnerability reporting. **Read before exposing the install.** |
 | **[API.md](docs/API.md)** | REST API v1 (deprecated) and v2, with Python / Node.js / cURL samples. |
 | **[docs/PRESET_CATALOG.md](docs/PRESET_CATALOG.md)** | The full 171+ preset catalog, by category. |
+| **[docs/MANUAL_ROUTES.md](docs/MANUAL_ROUTES.md)** | Manual Routes: add a domain, subdomain, wildcard or SNI host by hand, proxied in addition to the presets. |
+| **[docs/DEPLOY-UBUNTU24.fa.md](docs/DEPLOY-UBUNTU24.fa.md)** | Ubuntu 24.04 deployment guide (Persian): build from source, systemd unit, troubleshooting. |
 | **[CHANGELOG.md](docs/CHANGELOG.md)** | Release history and the fix behind each one. |
 | **[README.fa.md](README.fa.md)** | راهنمای فارسی. |
 
@@ -145,6 +147,22 @@ The container runs with `network_mode: host` on purpose. A NAT hop on every UDP 
 - **AI Assistants & Platforms:** Copilot, Perplexity, Grok, DeepSeek, Mistral, OpenRouter, and more (v2.2.0).
 - **Social & Messaging:** X, Instagram, Facebook, WhatsApp, Telegram, Reddit (v2.2.0).
 - **Developer 403 Bypass:** Docker Hub, Gradle, Android Developers, NPM, PyPI, OpenAI, Anthropic, Claude, Hugging Face, Cursor, Copilot, Kaggle.
+
+### 🧩 1.1. Manual Routes — domains, subdomains, wildcards and SNI hosts
+
+The last card of the **Gaming Policies** section is **Manual Routes**: type a
+domain, subdomain, `*.domain` wildcard or SNI host and it is proxied **in addition
+to** the presets, never instead of them.
+
+- A pasted URL, port, trailing dot and odd case are normalised (`https://Foo.com/x` → `foo.com`).
+- Input that cannot be routed (an IP, a bare TLD, a wildcard mid-name, non-ASCII) is
+  refused with the reason shown in the panel.
+- Applies to every client, including subscribers with their own policy selection.
+- Takes effect on the next query — the rule index is rebuilt and the cache flushed,
+  with no restart.
+- The same list is visible in Settings → Custom Proxied Domains: one list, two views.
+
+Full details: **[docs/MANUAL_ROUTES.md](/IzumiRain/HyperDNS/blob/main/docs/MANUAL_ROUTES.md)**
 
 ### 🛡️ 2. Transparent SNI Proxy Relay
 - Layer-4 TCP relaying without SSL termination: the TLS session stays end-to-end between the client and the origin, and HyperDNS never holds the keys for it.

@@ -1707,6 +1707,59 @@
             </div>
 
           </div>
+
+          <!-- MANUAL ROUTES — the operator's own domains, added by hand.
+               Placed at the end of Gaming Policies because that is where an
+               operator looks when the catalog does not cover a title: the
+               presets above are what ships, this is the escape hatch for
+               everything they missed. Backed by the same custom_proxied list
+               the Settings tab edits, so the two panels always agree. -->
+          <div class="glass-panel p-5 sm:p-6 space-y-4 border border-purple-500/30" id="manual-routes-panel">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div class="min-w-0">
+                <h3 class="text-xs sm:text-sm font-bold uppercase text-white flex items-center gap-2 font-heading">
+                  <i data-feather="plus-square" class="w-4 h-4 text-purple-400"></i>
+                  Manual Routes — Domains, Subdomains &amp; SNI
+                </h3>
+                <p class="text-[11px] text-slate-400 mt-0.5 max-w-3xl">
+                  Every route added here is proxied in addition to the gaming policies above — never instead of them.
+                </p>
+                <p dir="rtl" class="text-[11px] text-slate-500 mt-1">
+                  مسیرهای دستی: هر دامنه، ساب‌دامنه یا SNI که اینجا اضافه کنید، علاوه بر مسیرهای پیش‌فرض DNS از طریق این سرور عبور می‌کند.
+                </p>
+              </div>
+              <span id="manual-routes-count" class="shrink-0 px-2.5 py-1 rounded-lg bg-purple-500/10 border border-purple-500/30 text-[11px] font-mono text-purple-300">0 routes</span>
+            </div>
+
+            <div class="flex gap-2">
+              <input type="text" id="new-manual-route-input" autocomplete="off" spellcheck="false"
+                aria-label="New manual route domain or SNI hostname"
+                placeholder="example.com · api.example.com · *.example.com"
+                class="flex-1 min-w-0 px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-xs font-mono text-white focus:outline-none focus:border-purple-400">
+              <button id="add-manual-route-btn" class="shrink-0 px-4 py-2 bg-purple-500 hover:bg-purple-400 text-slate-950 font-bold rounded-lg text-xs transition font-heading">
+                Add route
+              </button>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[10px] text-slate-400">
+              <div class="rounded-lg bg-slate-950/60 border border-slate-800 px-3 py-2">
+                <span class="font-mono text-purple-300">example.com</span> — the site and every subdomain of it
+              </div>
+              <div class="rounded-lg bg-slate-950/60 border border-slate-800 px-3 py-2">
+                <span class="font-mono text-purple-300">api.example.com</span> — that host and anything under it
+              </div>
+              <div class="rounded-lg bg-slate-950/60 border border-slate-800 px-3 py-2">
+                <span class="font-mono text-purple-300">*.example.com</span> — subdomains only, not the apex
+              </div>
+            </div>
+
+            <div id="manual-routes-list" class="max-h-64 overflow-y-auto space-y-1.5 pe-1"><div class="text-slate-500 text-xs py-1">Loading routes…</div></div>
+
+            <p class="text-[10px] text-slate-500">
+              Several names can be pasted at once (comma, space or newline separated). A pasted URL, a port and a trailing dot are stripped automatically. Routes apply to every client,
+              including subscribers whose own policy selection does not list them, and outrank a preset covering the same name.
+            </p>
+          </div>
         </div>
 
         <!-- SECTION 2: STREAMING & MEDIA POLICIES -->

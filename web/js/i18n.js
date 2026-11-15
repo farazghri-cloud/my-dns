@@ -795,6 +795,17 @@
     'Testing VPS connectivity to Riot, Epic, Steam, Discord, EA, Battle.net, PUBG, Spotify...':
       'تست اتصال VPS به Riot، Epic، Steam، Discord، EA، Battle.net، PUBG و Spotify…',
 
+    /* --- Manual Routes panel (end of Gaming Policies) --- */
+    'Manual Routes — Domains, Subdomains & SNI': 'مسیرهای دستی — دامنه، ساب‌دامین و SNI',
+    'Every route added here is proxied in addition to the gaming policies above — never instead of them.':
+      'هر مسیری که اینجا اضافه شود، علاوه بر سیاست‌های گیمینگ بالا از پروکسی عبور می‌کند — نه به‌جای آن‌ها.',
+    'Add route': 'افزودن مسیر',
+    'No manual routes yet — the policies above are the whole rule set.':
+      'هنوز مسیر دستی‌ای ثبت نشده — سیاست‌های بالا کل مجموعهٔ قواعد هستند.',
+    'Loading routes…': 'در حال بارگذاری مسیرها…',
+    'A pasted URL, a port and a trailing dot are stripped automatically. Routes apply to every client, including subscribers whose own policy selection does not list them, and outrank a preset covering the same name.':
+      'آدرس کامل، پورت و نقطهٔ پایانی به‌صورت خودکار حذف می‌شوند. این مسیرها برای همهٔ کلاینت‌ها اعمال می‌شوند — حتی مشترکینی که سیاست خودشان این نام را ندارد — و بر preset هم‌نام اولویت دارند.',
+
     /* --- language + theme switcher labels (this file's own UI) --- */
     'Language': 'زبان',
     'Theme': 'پوسته',
@@ -822,7 +833,10 @@
     [/^Cache refresh:\s*(\d+)\s*served stale$/, 'نوسازی کش: $1 پاسخ کهنه'],
     [/^unreadable destination$/, 'مقصد ناخوانا'],
     [/^([\d.]+)\s*ms avg$/, 'میانگین $1 میلی‌ثانیه'],
-    [/^timed at\s*([\d.]+)\s*ms$/, 'زمان‌سنجی‌شده در $1 میلی‌ثانیه']
+    [/^timed at\s*([\d.]+)\s*ms$/, 'زمان‌سنجی‌شده در $1 میلی‌ثانیه'],
+    [/^(\d+)\s*routes$/, '$1 مسیر'],
+    [/^Route added — (.+) \((.+)\)$/, 'مسیر اضافه شد — $1 ($2)'],
+    [/^Route removed — (.+)$/, 'مسیر حذف شد — $1']
   ];
   /* ------------------------------------------------------------------ engine */
 
